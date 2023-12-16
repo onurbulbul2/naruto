@@ -33,7 +33,7 @@ parser = argparse.ArgumentParser()
 args = get_args(parser)
 
 os.makedirs(args.model_path, exist_ok=True)
-log = SummaryWriter(os.path.join('./assets/log/', args.tag))
+
 
 #確保了多個工作進程的隨機性是可重現的
 np.random.seed(int(time.time()))
@@ -52,7 +52,6 @@ thresh_good = 0.6
 thresh_bad = 0.6
 point_channel = 3
 
-
 def train(client_id, model, loader, epochs):
     optimizer = optim.Adam(model.parameters(), lr=args.local_lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.5)
@@ -62,37 +61,39 @@ def train(client_id, model, loader, epochs):
     correct = 0
     dataset_size = 0
     gradients = []
-    # 使用 trange 遍歷訓練的 epochs，提供進度條以顯示訓練進度
-    for epoch in trange(epochs, desc="client [{}]".format(client_id)):
-        # 遍歷數據加載器，每次獲取一個 batch 的數據
-        for batch_idx, (data, target) in enumerate(loader):
-            dataset_size += data.shape[0]
-            data, target = data.float(), target.long().squeeze()
-            if args.cuda:
-                data, target = data.cuda(), target.cuda()
+    # 遍歷數據加載器，每次獲取一個 batch 的數據
+    for batch_idx, (data, target) in enumerate(loader):
+        print("batch_idx: ", batch_idx)
+        if len(loader) == 0:
+            print("Empty DataLoader. No data is provided.")
+            break
+        dataset_size += data.shape[0]
+        data, target = data.float(), target.long().squeeze()
+        if args.cuda:
+            data, target = data.cuda(), target.cuda()
 
-            # 將梯度歸零，執行前向傳播，計算損失，執行反向傳播，然後根據優化器進行一步優化。
-            optimizer.zero_grad()
-            output, _ = model(data)
-            loss = F.nll_loss(output, target)
-            loss.backward()
-            optimizer.step()
+        # 將梯度歸零，執行前向傳播，計算損失，執行反向傳播，然後根據優化器進行一步優化。
+        optimizer.zero_grad()
+        output, _ = model(data)
+        loss = F.nll_loss(output, target)
+        loss.backward()
+        optimizer.step()
 
-            # 計算準確率並記錄訓練損失
-            pred = output.data.max(1, keepdim=True)[1]
-            correct += pred.eq(target.view_as(pred)).long().cpu().sum()
+        # 計算準確率並記錄訓練損失
+        pred = output.data.max(1, keepdim=True)[1]
+        correct += pred.eq(target.view_as(pred)).long().cpu().sum()
 
-            # 保存梯度
-            for param in model.parameters():
-                gradients.append(param.grad.data.clone())
+        # 保存梯度
+        for param in model.parameters():
+            gradients.append(param.grad.data.clone())
 
-            # 如果達到了指定的 log 間隔，則輸出當前的訓練損失
-            if batch_idx % args.log_interval == 0:
-                percentage = 100. * batch_idx * args.batch_size / len(loader.dataset)
-                print(f'Train Epoch: {epoch} [{batch_idx * args.batch_size}/{len(loader.dataset)} ({percentage}%)]'
-                      f'\tLoss: {loss.item()}\t{args.tag}')
-                log.add_scalar('train_loss', loss.cpu().item(), batch_idx + epoch * len(loader))
-
+        # 如果達到了指定的 log 間隔，則輸出當前的訓練損失
+        if batch_idx % args.log_interval == 0:
+            percentage = 100. * batch_idx * args.batch_size / len(loader.dataset)
+            print(f'Train Epoch: {epochs} [{batch_idx * args.batch_size}/{len(loader.dataset)} ({percentage}%)]'
+                  f'\tLoss: {loss.item()}\t{args.tag}')
+            log.add_scalar('train_loss', loss.cpu().item(), batch_idx + epochs * len(loader))
+    #print("dataset size {}".format(dataset_size))
     weight = torch.tensor(len(loader.sampler))
     return float(correct) / float(dataset_size), weight, gradients
 
@@ -124,7 +125,6 @@ def test(model, loader):
     test_loss /= len(loader.dataset)
     acc = float(correct) / float(dataset_size)
     return acc, test_loss
-
 def main():
     logger = Logger(log_name="Personalized FedAvg")
     device = torch.device("cpu")
@@ -149,40 +149,6 @@ def main():
     print("training_clients_id_list = {}".format(training_clients_id_list))
     print("test_clients_id_list = {}".format(test_clients_id_list))
     '''
-    stats = dict(init=[], per=[])
-    train_loader = torch.utils.data.DataLoader(
-        PointGraspOneViewDataset(
-            grasp_points_num=grasp_points_num,
-            tag='train',
-            grasp_amount_per_file=6500,
-            thresh_good=thresh_good,
-            thresh_bad=thresh_bad,
-        ),
-        batch_size=args.batch_size,
-        num_workers=20,
-        pin_memory=True,
-        shuffle=True,
-        worker_init_fn=worker_init_fn,
-        collate_fn=my_collate,
-    )
-
-    test_loader = torch.utils.data.DataLoader(
-        PointGraspOneViewDataset(
-            grasp_points_num=grasp_points_num,
-            tag='test',
-            grasp_amount_per_file=500,
-            thresh_good=thresh_good,
-            thresh_bad=thresh_bad,
-            with_obj=True,
-        ),
-        batch_size=args.batch_size,
-        num_workers=20,
-        pin_memory=True,
-        shuffle=True,
-        worker_init_fn=worker_init_fn,
-        collate_fn=my_collate,
-    )
-
     is_resume = 0
     if args.load_model and args.load_epoch != -1:
         is_resume = 1
@@ -203,7 +169,7 @@ def main():
             torch.cuda.set_device(device_id[0])
             model = nn.DataParallel(model, device_ids=device_id).cuda()
 
-
+    stats = dict(init=[], per=[])
     # FedAvg training
     for e in range(args.epochs):
         logger.info(f"FedAvg training epoch [{e}] ")
@@ -212,7 +178,44 @@ def main():
         )
         all_client_weights = []
         all_client_gradients = []
+
         for client_id in selected_clients:
+            args.tag = "client_{}".format(client_id)
+            log = SummaryWriter(os.path.join('./assets/log/', args.tag))
+
+            train_loader = torch.utils.data.DataLoader(
+                PointGraspOneViewDataset(
+                    grasp_points_num=grasp_points_num,
+                    tag='train',
+                    grasp_amount_per_file=6500,
+                    thresh_good=thresh_good,
+                    thresh_bad=thresh_bad,
+                    client_id=client_id,
+                ),
+                batch_size=args.batch_size,
+                num_workers=20,
+                pin_memory=True,
+                shuffle=True,
+                worker_init_fn=worker_init_fn,
+                collate_fn=my_collate,
+            )
+            test_loader = torch.utils.data.DataLoader(
+                PointGraspOneViewDataset(
+                    grasp_points_num=grasp_points_num,
+                    tag='test',
+                    grasp_amount_per_file=500,
+                    thresh_good=thresh_good,
+                    thresh_bad=thresh_bad,
+                    with_obj=True,
+                    client_id=client_id,
+                ),
+                batch_size=args.batch_size,
+                num_workers=20,
+                pin_memory=True,
+                shuffle=True,
+                worker_init_fn=worker_init_fn,
+                collate_fn=my_collate,
+            )
             for epoch in range(is_resume * args.load_epoch,  args.inner_loops):
                 acc_train, weight, grads = train(client_id, global_model, train_loader, epoch)
                 print('Train done, acc={}'.format(acc_train))
@@ -224,12 +227,12 @@ def main():
                 log.add_scalar('test_loss', loss, epoch)
                 # 每隔一定的 epoch 數（由 args.save_interval 決定），保存模型的狀態。
                 if epoch % args.save_interval == 0:
-                    path = os.path.join(args.model_path, args.tag + '_{}.model'.format(epoch))
+                    path = os.path.join(args.model_path, 'client' + '_{}.model'.format(client_id))
                     torch.save(model, path)
                     print('Save model @ {}'.format(path))
-
-                all_client_weights.append(weight)
-                all_client_gradients.append(grads)
+                if epoch % args.inner_loops == 0:
+                    all_client_weights.append(weight)
+                    all_client_gradients.append(grads)
 
         # FedAvg aggregation(using momentum SGD)
         global_optimizer.zero_grad()
@@ -359,5 +362,6 @@ def main():
         )
     )
 '''
+
 if __name__ == "__main__":
     main()

@@ -112,7 +112,7 @@ def get_args(parser):
     parser.add_argument('--model_path', type=str, default='./assets/learned_models',
                         help='pre-trained model path')
     parser.add_argument('--log_interval', type=int, default=10)
-    parser.add_argument('--save_interval', type=int, default=1)
+    parser.add_argument('--save_interval', type=int, default=5)
 
     _args = parser.parse_args()
     return _args

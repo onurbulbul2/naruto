@@ -378,7 +378,7 @@ class PointGraspMultiClassDataset(BaseGraspDataset):
 
 class PointGraspOneViewDataset(BaseGraspDataset):
     def __init__(self, grasp_points_num, grasp_amount_per_file, thresh_good,
-                 thresh_bad, tag, with_obj=False, projection=False, project_chann=3, project_size=60):
+                 thresh_bad, tag, with_obj=False, projection=False, project_chann=3, project_size=60, client_id: int = None):
         super().__init__()
         self.grasp_points_num = grasp_points_num
         self.grasp_amount_per_file = grasp_amount_per_file
@@ -400,7 +400,7 @@ class PointGraspOneViewDataset(BaseGraspDataset):
         self.projection_margin = 1
         self.minimum_point_amount = 150
 
-        fl_grasp = glob.glob(rf"{self.pointnetgpd_dir}\PointNetGPD\data\ycb_grasp\{self.tag}\*.npy")
+        fl_grasp = glob.glob(rf"{self.pointnetgpd_dir}\PointNetGPD\data\ycb_grasp\{self.tag}\{self.tag}_{client_id}\*.npy")
         fl_pc = glob.glob(rf"{self.pointnetgpd_dir}\PointNetGPD\data\ycb-tools\models\ycb\*\rgbd\clouds\pc_NP3_NP5*.npy")
         self.d_pc, self.d_grasp = {}, {}
         for i in fl_pc:
@@ -419,7 +419,7 @@ class PointGraspOneViewDataset(BaseGraspDataset):
             self.d_grasp[k] = i
 
         # Add print statements to debug
-        #print("Keys in self.d_grasp:", self.d_grasp.keys())
+        print("Keys in self.d_grasp:", self.d_grasp.keys())
         #print("Keys in self.d_pc:", self.d_pc.keys())
 
         #print("\nTransform Keys:")
@@ -432,8 +432,8 @@ class PointGraspOneViewDataset(BaseGraspDataset):
         #print(self.object)
 
         self.amount = len(self.object) * self.grasp_amount_per_file
-        #print("\nDataset Size:")
-        #print(self.amount)
+        print("\nDataset Size:")
+        print(self.amount)
 
     def __getitem__(self, index):
         obj_ind, grasp_ind = np.unravel_index(index, (len(self.object), self.grasp_amount_per_file))
