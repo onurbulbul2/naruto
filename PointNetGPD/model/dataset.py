@@ -400,7 +400,7 @@ class PointGraspOneViewDataset(BaseGraspDataset):
         self.projection_margin = 1
         self.minimum_point_amount = 150
 
-        fl_grasp = glob.glob(rf"{self.pointnetgpd_dir}\PointNetGPD\data\ycb_grasp\{self.tag}\{self.tag}_{client_id}\*.npy")
+        fl_grasp = glob.glob(rf"{self.pointnetgpd_dir}\PointNetGPD\data\ycb_grasp\{self.tag}_{client_id}\*.npy")
         fl_pc = glob.glob(rf"{self.pointnetgpd_dir}\PointNetGPD\data\ycb-tools\models\ycb\*\rgbd\clouds\pc_NP3_NP5*.npy")
         self.d_pc, self.d_grasp = {}, {}
         for i in fl_pc:
@@ -419,8 +419,8 @@ class PointGraspOneViewDataset(BaseGraspDataset):
             self.d_grasp[k] = i
 
         # Add print statements to debug
-        print("Keys in self.d_grasp:", self.d_grasp.keys())
-        #print("Keys in self.d_pc:", self.d_pc.keys())
+        #print("\nKeys in self.d_grasp:", self.d_grasp.keys())
+        #print("\nKeys in self.d_pc:", self.d_pc.keys())
 
         #print("\nTransform Keys:")
         #print(self.transform.keys())

@@ -47,7 +47,7 @@ def get_args(parser):
     parser.add_argument(
         "--local_lr",
         type=float,
-        default=5e-3,
+        default=0.005,
         help="local optimizer lr in FedAvg section",
     )
     parser.add_argument(
@@ -86,12 +86,7 @@ def get_args(parser):
     parser.add_argument(
         "--pers_round", type=int, default=5, help="num of round of personalization"
     )
-    parser.add_argument(
-        "--cuda",
-        type=bool,
-        default=True,
-        help="True for using GPUS, False for using CPU",
-    )
+    parser.add_argument('--cuda', action='store_true')
     parser.add_argument(
         "--struct",
         type=str,

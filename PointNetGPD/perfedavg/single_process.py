@@ -34,7 +34,6 @@ args = get_args(parser)
 
 os.makedirs(args.model_path, exist_ok=True)
 
-
 #確保了多個工作進程的隨機性是可重現的
 np.random.seed(int(time.time()))
 def worker_init_fn(pid):
@@ -46,13 +45,13 @@ def my_collate(batch):
     batch = list(filter(lambda x: x is not None, batch))
     return torch.utils.data.dataloader.default_collate(batch)
 
-
 grasp_points_num = 750
 thresh_good = 0.6
 thresh_bad = 0.6
 point_channel = 3
 
-def train(client_id, model, loader, epochs):
+def train(model, loader, epoch):
+    log = SummaryWriter(os.path.join('./assets/log/', args.tag))
     optimizer = optim.Adam(model.parameters(), lr=args.local_lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.5)
     scheduler.step()
@@ -61,9 +60,10 @@ def train(client_id, model, loader, epochs):
     correct = 0
     dataset_size = 0
     gradients = []
+    # 保存當前模型的參數
+    current_params = [param.data.clone() for param in model.parameters()]
     # 遍歷數據加載器，每次獲取一個 batch 的數據
     for batch_idx, (data, target) in enumerate(loader):
-        print("batch_idx: ", batch_idx)
         if len(loader) == 0:
             print("Empty DataLoader. No data is provided.")
             break
@@ -71,7 +71,6 @@ def train(client_id, model, loader, epochs):
         data, target = data.float(), target.long().squeeze()
         if args.cuda:
             data, target = data.cuda(), target.cuda()
-
         # 將梯度歸零，執行前向傳播，計算損失，執行反向傳播，然後根據優化器進行一步優化。
         optimizer.zero_grad()
         output, _ = model(data)
@@ -83,17 +82,16 @@ def train(client_id, model, loader, epochs):
         pred = output.data.max(1, keepdim=True)[1]
         correct += pred.eq(target.view_as(pred)).long().cpu().sum()
 
-        # 保存梯度
-        for param in model.parameters():
-            gradients.append(param.grad.data.clone())
-
         # 如果達到了指定的 log 間隔，則輸出當前的訓練損失
         if batch_idx % args.log_interval == 0:
             percentage = 100. * batch_idx * args.batch_size / len(loader.dataset)
-            print(f'Train Epoch: {epochs} [{batch_idx * args.batch_size}/{len(loader.dataset)} ({percentage}%)]'
+            print(f'Train Epoch: {epoch} [{batch_idx * args.batch_size}/{len(loader.dataset)} ({percentage}%)]'
                   f'\tLoss: {loss.item()}\t{args.tag}')
-            log.add_scalar('train_loss', loss.cpu().item(), batch_idx + epochs * len(loader))
-    #print("dataset size {}".format(dataset_size))
+            log.add_scalar('train_loss', loss.cpu().item(), batch_idx + epoch * len(loader))
+
+        # 保存梯度（計算梯度和先前保存的模型參數之間的差異）
+        for old_param, new_param in zip(current_params, model.parameters()):
+            gradients.append(old_param - new_param.data)
     weight = torch.tensor(len(loader.sampler))
     return float(correct) / float(dataset_size), weight, gradients
 
@@ -127,17 +125,16 @@ def test(model, loader):
     return acc, test_loss
 def main():
     logger = Logger(log_name="Personalized FedAvg")
+    '''
     device = torch.device("cpu")
     if torch.cuda.is_available() and args.cuda:
         device = get_best_gpu()
-
-    global_model = PointNetCls().to(device)
+    global_model = PointNetCls(num_points=grasp_points_num, input_chann=point_channel, k=2).to(device)
     global_optimizer = get_optimizer(
         global_model, "sgd", dict(lr=args.server_lr, momentum=0.9)
     )
     criterion = torch.nn.CrossEntropyLoss()
-
-
+    '''
     # seperate clients into training clients & test clients
     num_training_clients = int(0.8 * args.client_num_in_total)
     training_clients_id_list = range(num_training_clients)
@@ -154,20 +151,24 @@ def main():
         is_resume = 1
 
     if is_resume or args.mode == 'test':
-        model = torch.load(args.load_model, map_location='cuda:{}'.format(args.gpu))
-        model.device_ids = [args.gpu]
+        global_model = torch.load(args.load_model, map_location='cuda:{}'.format(args.gpu))
+        global_model.device_ids = [args.gpu]
         print('load model {}'.format(args.load_model))
     else:
-        model = PointNetCls(num_points=grasp_points_num, input_chann=point_channel, k=2)
+        global_model = PointNetCls(num_points=grasp_points_num, input_chann=point_channel, k=2)
+        global_optimizer = get_optimizer(
+            global_model, "sgd", dict(lr=args.server_lr, momentum=0.9)
+        )
+        criterion = torch.nn.CrossEntropyLoss()
 
     if args.cuda:
         if args.gpu != -1:
             torch.cuda.set_device(args.gpu)
-            model = model.cuda()
+            model = global_model.cuda()
         else:
             device_id = [0, 1, 2, 3]
             torch.cuda.set_device(device_id[0])
-            model = nn.DataParallel(model, device_ids=device_id).cuda()
+            model = nn.DataParallel(global_model, device_ids=device_id).cuda()
 
     stats = dict(init=[], per=[])
     # FedAvg training
@@ -180,6 +181,7 @@ def main():
         all_client_gradients = []
 
         for client_id in selected_clients:
+            logger.info(f"choose client = [{client_id}] ")
             args.tag = "client_{}".format(client_id)
             log = SummaryWriter(os.path.join('./assets/log/', args.tag))
 
@@ -216,23 +218,30 @@ def main():
                 worker_init_fn=worker_init_fn,
                 collate_fn=my_collate,
             )
-            for epoch in range(is_resume * args.load_epoch,  args.inner_loops):
-                acc_train, weight, grads = train(client_id, global_model, train_loader, epoch)
-                print('Train done, acc={}'.format(acc_train))
-                acc, loss = test(model, test_loader)
+
+            if args.mode == 'train':
+                for epoch in range(is_resume * args.load_epoch,  args.inner_loops):
+                    acc_train, weight, grads = train(global_model, train_loader, epoch)
+                    print('Train done, acc={}'.format(acc_train))
+                    acc, loss = test(global_model, test_loader)
+                    print('Test done, acc={}, loss={}'.format(acc, loss))
+                    # 使用 tensorboardX 的 SummaryWriter 將訓練和測試的準確率及損失記錄下來。
+                    log.add_scalar('train_acc', acc_train, epoch)
+                    log.add_scalar('test_acc', acc, epoch)
+                    log.add_scalar('test_loss', loss, epoch)
+                    # 每隔一定的 epoch 數（由 args.save_interval 決定），保存模型的狀態。
+                    if epoch+1 % args.save_interval == 0 :
+                        path = os.path.join(args.model_path, 'client' + '_{}_{}.model'.format(client_id, epoch))
+                        torch.save(global_model, path)
+                        print('Save model @ {}'.format(path))
+                    if epoch+1 % args.inner_loops == 0 and epoch > 0:
+                        print("save weight and grads every {} epochs ".format(epoch))
+                        all_client_weights.append(weight)
+                        all_client_gradients.append(grads)
+            else:
+                print('testing...')
+                acc, loss = test(global_model, test_loader)
                 print('Test done, acc={}, loss={}'.format(acc, loss))
-                # 使用 tensorboardX 的 SummaryWriter 將訓練和測試的準確率及損失記錄下來。
-                log.add_scalar('train_acc', acc_train, epoch)
-                log.add_scalar('test_acc', acc, epoch)
-                log.add_scalar('test_loss', loss, epoch)
-                # 每隔一定的 epoch 數（由 args.save_interval 決定），保存模型的狀態。
-                if epoch % args.save_interval == 0:
-                    path = os.path.join(args.model_path, 'client' + '_{}.model'.format(client_id))
-                    torch.save(model, path)
-                    print('Save model @ {}'.format(path))
-                if epoch % args.inner_loops == 0:
-                    all_client_weights.append(weight)
-                    all_client_gradients.append(grads)
 
         # FedAvg aggregation(using momentum SGD)
         global_optimizer.zero_grad()

@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import StepLR
 
 from model.dataset import *
 from model.pointnet import PointNetCls, DualPointNetCls
-
+'''
 parser = argparse.ArgumentParser(description='pointnetGPD')
 parser.add_argument('--tag', type=str, default='default')
 parser.add_argument('--epoch', type=int, default=200)
@@ -31,6 +31,10 @@ parser.add_argument('--log-interval', type=int, default=10)
 parser.add_argument('--save-interval', type=int, default=1)
 
 args = parser.parse_args()
+'''
+from perfedavg.utils import get_args
+parser = argparse.ArgumentParser()
+args = get_args(parser)
 
 args.cuda = args.cuda if torch.cuda.is_available else False
 if args.cuda:
@@ -59,13 +63,14 @@ point_channel = 3
 
 
 def train(model, loader, epoch):
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.local_lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.5)
     scheduler.step()
     model.train()
     torch.set_grad_enabled(True)
     correct = 0
     dataset_size = 0
+    gradients = []
     #遍歷數據加載器，每次獲取一個 batch 的數據
     for batch_idx, (data, target) in enumerate(loader):
         dataset_size += data.shape[0]
@@ -81,13 +86,17 @@ def train(model, loader, epoch):
         #計算準確率並記錄訓練損失
         pred = output.data.max(1, keepdim=True)[1]
         correct += pred.eq(target.view_as(pred)).long().cpu().sum()
+
+        for param in model.parameters():
+            gradients.append(param.grad.data.clone())
         #如果達到了指定的 log 間隔，則輸出當前的訓練損失
         if batch_idx % args.log_interval == 0:
             percentage = 100. * batch_idx * args.batch_size / len(loader.dataset)
             print(f'Train Epoch: {epoch} [{batch_idx * args.batch_size}/{len(loader.dataset)} ({percentage}%)]'
                   f'\tLoss: {loss.item()}\t{args.tag}')
             logger.add_scalar('train_loss', loss.cpu().item(), batch_idx + epoch * len(loader))
-    return float(correct) / float(dataset_size)
+    weight = torch.tensor(len(loader.sampler))
+    return float(correct) / float(dataset_size), weight, gradients
 
 
 def test(model, loader):
@@ -128,6 +137,7 @@ def main():
             grasp_amount_per_file=6500,
             thresh_good=thresh_good,
             thresh_bad=thresh_bad,
+            client_id=0,
         ),
         batch_size=args.batch_size,
         num_workers=20,
@@ -145,6 +155,7 @@ def main():
             thresh_good=thresh_good,
             thresh_bad=thresh_bad,
             with_obj=True,
+            client_id=0,
         ),
         batch_size=args.batch_size,
         num_workers=20,
@@ -177,7 +188,7 @@ def main():
             model = nn.DataParallel(model, device_ids=device_id).cuda()
 
     if args.mode == 'train':
-        for epoch in range(is_resume * args.load_epoch, args.epoch):
+        for epoch in range(is_resume * args.load_epoch, args.inner_loops):
             acc_train = train(model, train_loader, epoch)
             print('Train done, acc={}'.format(acc_train))
             acc, loss = test(model, test_loader)
